@@ -179,7 +179,7 @@ spec:
               fieldPath: metadata.namespace
         - name: SECRET_NAME
           value: cluster-api-provider-dind-webhook-server-secret
-        image: IMAGE_URL
+        image: kubekit99/cluster-api-provider-dind
         imagePullPolicy: Always
         name: manager
         ports:
