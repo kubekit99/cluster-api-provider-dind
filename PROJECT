@@ -1,0 +1,3 @@
+version: "1"
+domain: kubekit.cloud
+repo: github.com/kubekit99/cluster-api-provider-dind
