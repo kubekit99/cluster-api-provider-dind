@@ -17,68 +17,80 @@ limitations under the License.
 package main
 
 import (
-	"flag"
-	"os"
+        "flag"
+        "fmt"
+        "os"
 
-	"github.com/kubekit99/cluster-api-provider-dind/pkg/apis"
-	"github.com/kubekit99/cluster-api-provider-dind/pkg/controller"
-	"github.com/kubekit99/cluster-api-provider-dind/pkg/webhook"
-	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
-	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
-	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
+        "github.com/kubekit99/cluster-api-provider-dind/pkg/apis"
+        "github.com/kubekit99/cluster-api-provider-dind/pkg/cloud/dind/actuators/cluster"
+        "github.com/kubekit99/cluster-api-provider-dind/pkg/cloud/dind/actuators/machine"
+        clusterapis "sigs.k8s.io/cluster-api/pkg/apis"
+        "sigs.k8s.io/cluster-api/pkg/apis/cluster/common"
+        "sigs.k8s.io/cluster-api/pkg/client/clientset_generated/clientset"
+        capicluster "sigs.k8s.io/cluster-api/pkg/controller/cluster"
+        capimachine "sigs.k8s.io/cluster-api/pkg/controller/machine"
+        "sigs.k8s.io/controller-runtime/pkg/client/config"
+        "sigs.k8s.io/controller-runtime/pkg/manager"
+        logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
+        "sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 )
 
 func main() {
+        cfg := config.GetConfigOrDie()
+        if cfg == nil {
+                panic(fmt.Errorf("GetConfigOrDie didn't die"))
+        }
+
 	var metricsAddr string
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
-	flag.Parse()
-	logf.SetLogger(logf.ZapLogger(false))
-	log := logf.Log.WithName("entrypoint")
+        flag.Parse()
+        log := logf.Log.WithName("dind-controller-manager")
+        logf.SetLogger(logf.ZapLogger(false))
+        entryLog := log.WithName("entrypoint")
 
-	// Get a config to talk to the apiserver
-	log.Info("setting up client for manager")
-	cfg, err := config.GetConfig()
-	if err != nil {
-		log.Error(err, "unable to set up client config")
-		os.Exit(1)
-	}
-
-	// Create a new Cmd to provide shared dependencies and start components
-	log.Info("setting up manager")
+        // Setup a Manager
 	mgr, err := manager.New(cfg, manager.Options{MetricsBindAddress: metricsAddr})
-	if err != nil {
-		log.Error(err, "unable to set up overall controller manager")
-		os.Exit(1)
-	}
+        if err != nil {
+                entryLog.Error(err, "unable to set up overall controller manager")
+                os.Exit(1)
+        }
 
-	log.Info("Registering Components.")
+        cs, err := clientset.NewForConfig(cfg)
+        if err != nil {
+                panic(err)
+        }
 
-	// Setup Scheme for all resources
-	log.Info("setting up scheme")
-	if err := apis.AddToScheme(mgr.GetScheme()); err != nil {
-		log.Error(err, "unable add APIs to scheme")
-		os.Exit(1)
-	}
+        clusterActuator, err := cluster.NewActuator(cluster.ActuatorParams{
+                ClustersGetter: cs.ClusterV1alpha1(),
+        })
+        if err != nil {
+                panic(err)
+        }
 
-	// Setup all Controllers
-	log.Info("Setting up controller")
-	if err := controller.AddToManager(mgr); err != nil {
-		log.Error(err, "unable to register controllers to the manager")
-		os.Exit(1)
-	}
+        machineActuator, err := machine.NewActuator(machine.ActuatorParams{
+                MachinesGetter: cs.ClusterV1alpha1(),
+        })
+        if err != nil {
+                panic(err)
+        }
 
-	log.Info("setting up webhooks")
-	if err := webhook.AddToManager(mgr); err != nil {
-		log.Error(err, "unable to register webhooks to the manager")
-		os.Exit(1)
-	}
+        // Register our cluster deployer (the interface is in clusterctl and we define the Deployer interface on the actuator)
+        common.RegisterClusterProvisioner("dind", clusterActuator)
 
-	// Start the Cmd
-	log.Info("Starting the Cmd.")
-	if err := mgr.Start(signals.SetupSignalHandler()); err != nil {
-		log.Error(err, "unable to run the manager")
-		os.Exit(1)
-	}
+        if err := apis.AddToScheme(mgr.GetScheme()); err != nil {
+                panic(err)
+        }
+
+        if err := clusterapis.AddToScheme(mgr.GetScheme()); err != nil {
+                panic(err)
+        }
+
+        capimachine.AddWithActuator(mgr, machineActuator)
+
+        capicluster.AddWithActuator(mgr, clusterActuator)
+
+        if err := mgr.Start(signals.SetupSignalHandler()); err != nil {
+                entryLog.Error(err, "unable to run manager")
+                os.Exit(1)
+        }
 }
